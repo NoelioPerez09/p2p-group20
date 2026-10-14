@@ -22,13 +22,12 @@ def decode_handshake(encoded_handshake : bytes) -> int:
     'P2PFILESHARINGPROJ'. Returns
     peer_id from encoded handshake
     '''
+    if len(encoded_handshake) != 32:
+        raise ValueError("Handshake must be exactly 32 bytes")
     try:
         decoded_handshake = struct.unpack(">18s10sI", encoded_handshake)
     except:
         raise(ValueError) 
-    length_sum = len(decoded_handshake[0]) + len(decoded_handshake[1]) + len(str(decoded_handshake[2]))
-    if length_sum != 32:
-        raise(ValueError)
     if decoded_handshake[0] != HANDSHAKE_HEADER:
         raise(ValueError)
     return decoded_handshake[2]
