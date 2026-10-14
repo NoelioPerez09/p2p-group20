@@ -21,7 +21,7 @@ def receive_exact(sock: socket.socket, size: int) -> bytes:
 
     return bytes(data)
 
-def perform_handshake(sock: socket.socket, peer_id: int, expected_peer_id: int) -> int:
+def perform_handshake(sock: socket.socket, peer_id: int, expected_peer_id: int | None = None) -> int:
     '''
     Exchanges handshakes with another peer and verifies
     that we connected to the correct peer.
@@ -36,7 +36,7 @@ def perform_handshake(sock: socket.socket, peer_id: int, expected_peer_id: int) 
     other_id = decode_handshake(received)
 
     #make sure the peer is who we expected
-    if other_id != expected_peer_id:
+    if expected_peer_id is not None and other_id != expected_peer_id:
         raise ValueError(f"Expected Peer {expected_peer_id}, got peer {other_id}")
 
     return other_id
