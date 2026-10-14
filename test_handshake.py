@@ -90,10 +90,10 @@ class TestHandshake(unittest.TestCase):
             #send only pare of the 32-byte handshale
             sock2.sendall(encode_handshake(1002)[:15])
 
-            #cose the connection before sending the rest of the handshake
-            sock2.close()
+            #stop sending (but stay connected) before the rest of the handshake
+            sock2.shutdown(socket.SHUT_WR)
 
-            with self.assertRaises(ConnectionError):
+            with self.assertRaises(EOFError):
                 perform_handshake(sock1, 1001, 1002)
         finally:
             sock1.close()

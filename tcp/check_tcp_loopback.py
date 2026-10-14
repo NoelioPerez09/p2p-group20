@@ -15,7 +15,7 @@ import time
 
 from tcp import ConnectionManager, recv_exact
 from event_logger import EventLogger
-from handshake import perform_handshake, receive_exact
+from handshake import perform_handshake
 from protocol_codec import encode_handshake, decode_handshake
 
 
@@ -46,7 +46,7 @@ def worker(peer_id, records, barrier, results, log_directory, started=None):
             handshake = encode_handshake(peer_id)
             connection.sendall(handshake[:7])
             connection.sendall(handshake[7:])
-            other = decode_handshake(receive_exact(connection, 32))
+            other = decode_handshake(recv_exact(connection, 32))
             if other not in allowed or other in identified:
                 raise AssertionError("Unexpected or duplicate incoming peer ID")
             identified[other] = connection

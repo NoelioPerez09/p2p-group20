@@ -52,6 +52,8 @@ class ConnectionManager:
             return
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
+            #lets us restart a peer right away instead of waiting for old connections to expire
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind((bind_host, self.self_info["port"]))
             listener.listen(max(1, len(self.later_peers)))
             listener.settimeout(self.timeout)
