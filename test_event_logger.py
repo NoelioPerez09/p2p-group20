@@ -54,7 +54,7 @@ class TestEventLogger(unittest.TestCase):
 
         entry = self.read_log(1001)[0]
 
-        #Check for date, hour, minute, and second
+        #checks for date, hour, minute, and second
         pattern = r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]:"
         self.assertRegex(entry, pattern)
 
@@ -70,8 +70,7 @@ class TestEventLogger(unittest.TestCase):
 
         self.logger.log_connection_made(1002)
         second_logger.log_connection_received(1001)
-
-        # each pair should only record its own events
+        
         first_entries = self.read_log(1001)
         second_entries = self.read_log(1002)
 
