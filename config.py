@@ -1,14 +1,13 @@
 import sys
 
-#keys Common.cfg must contain, and which of them must be integers
+#Names of keys as constant list for ease of use
 COMMON_INT_KEYS = ["NumberOfPreferredNeighbors", "UnchokingInterval",
                    "OptimisticUnchokingInterval", "FileSize", "PieceSize"]
 COMMON_KEYS = COMMON_INT_KEYS + ["FileName"]
 
 def parse_common_config(path : str ="Common.cfg") -> dict:
     '''
-    Reads Common.cfg and returns it as a dictionary,
-    exits with a clear message if the file is missing or invalid
+    Reads Common.cfg and returns it as a dict.
     '''
     config_dict = dict()
     try:
@@ -26,12 +25,12 @@ def parse_common_config(path : str ="Common.cfg") -> dict:
     except FileNotFoundError:
         sys.exit(f"Could not find {path}")
 
-    #every required key must be present
+    #exists out if every required key is not be present
     for key in COMMON_KEYS:
         if key not in config_dict:
             sys.exit(f"{path} is missing {key}")
 
-    #numeric keys must actually be numbers
+    #Checks if the keys that are supposed to be numers are indeed numbers
     for key in COMMON_INT_KEYS:
         if not isinstance(config_dict[key], int):
             sys.exit(f"{key} must be a whole number")
@@ -45,8 +44,7 @@ def parse_common_config(path : str ="Common.cfg") -> dict:
 
 def parse_peer_info(path : str ="PeerInfo.cfg") -> list[dict]:
     '''
-    Read PeerInfo.cfg and returns it as a list of dictionaries,
-    where each dictionary is a peer info line
+    Read PeerInfo.cfg and returns it as a list of dicts.
     '''
     config_list = []
     seen_ids = set()
@@ -89,9 +87,8 @@ def parse_peer_info(path : str ="PeerInfo.cfg") -> list[dict]:
 
 def peers_before(peer_id: int, all_peers: list[dict]) -> list[dict]:
     '''
-    Returns the sublist of peers that appear
-    before peer_id in the file.
-    Raises ValueError if peer_id isn't in the file
+    Returns the list of peers that appear
+    before the given peer_id in the all_peers dict.
     '''
     peers = []
     for p in all_peers:
@@ -102,8 +99,7 @@ def peers_before(peer_id: int, all_peers: list[dict]) -> list[dict]:
 
 def get_self_info(peer_id: int, all_peers: list[dict]) -> dict:
     '''
-    Returns this peer's own record from parse_peer_info() list[dict].
-    Raises ValueError if peer_id isn't in the file
+    Returns this peer's dict from the all_peers list of dicts.
     '''
     for p in all_peers:
         if p['peer_id'] == peer_id:
