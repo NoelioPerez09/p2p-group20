@@ -10,10 +10,9 @@ class TestTCPHandshake(unittest.TestCase):
 
     def test_tcp_handshake(self):
         '''
-        Tests two peers connecting over TCP
-        and successfully exchanging handshakes.
+        Tests two peers handshake exchange and connection
         '''
-        #find two available local ports
+        #local ports finder
         with socket.socket() as temp1, socket.socket() as temp2:
             temp1.bind(("127.0.0.1", 0))
             temp2.bind(("127.0.0.1", 0))
@@ -36,7 +35,7 @@ class TestTCPHandshake(unittest.TestCase):
                 sock = manager1.accept_next()
                 other_id = perform_handshake(sock, 1001)
 
-                #verify the incoming peer is allowed
+                #incoming peer verifier 
                 if other_id != 1002:
                     raise ValueError("Unexpected incoming peer")
 
@@ -45,7 +44,6 @@ class TestTCPHandshake(unittest.TestCase):
                 errors.append(error)
 
         try:
-            #both peers begin listening
             manager1.start_listening("127.0.0.1")
             manager2.start_listening("127.0.0.1")
 
