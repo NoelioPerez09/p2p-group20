@@ -1,4 +1,4 @@
-"""TCP tests; use loopback only and leave team configuration alone."""
+"""Connection manager tests"""
 
 import socket
 import threading
@@ -10,7 +10,7 @@ from tcp import ConnectionManager, recv_exact
 
 
 def peers():
-    # Deliberately different from numeric order; config ports are strings.
+    # Test in which numeric order is different.
     return [{"peer_id": i, "host": "127.0.0.1", "port": str(p)}
             for i, p in [(1003, 6101), (1001, 6102), (1002, 6103)]]
 
@@ -160,7 +160,7 @@ class ConnectionManagerTests(unittest.TestCase):
 
     def test_real_ipv4_connection_and_cleanup(self):
         manager = ConnectionManager(1001, peers(), timeout=1)
-        # Port zero is test-only to ask the OS for an available loopback port.
+        # Testing out for port 0 (OS port)
         manager.self_info["port"] = 0
         manager.start_listening("127.0.0.1")
         listener = manager.listener
@@ -180,8 +180,7 @@ class ConnectionManagerTests(unittest.TestCase):
             manager.close()
 
     def test_missing_earlier_peer_is_bounded_and_cleans_up(self):
-        # First earlier peer listens; second reserves a port but never listens.
-        # No DNS or port-selection race is involved in this loopback failure.
+        # One peer listens and the other reservers the port. 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as earlier, \
                 socket.socket(socket.AF_INET, socket.SOCK_STREAM) as missing:
             earlier.bind(("127.0.0.1", 0))
