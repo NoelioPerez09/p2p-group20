@@ -10,18 +10,15 @@ class TestHandshake(unittest.TestCase):
 
     def test_valid_handshake(self):
         '''
-        Checks that two peers can successfully
-        exchange and validate their handshakes
+        Tests thet handshake exchange and validation works.
         '''
 
         sock1, sock2 = socket.socketpair()
         try:
-            #simulate peer 1002 sending a handshake
+            #peer 1002 sends a handshake
             sock2.sendall(
                 __import__("protocol_codec").encode_handshake(1002)
             )
-
-            #peer 1001 performs handshake with peer 1002
             result = perform_handshake(sock1, 1001, 1002)
 
             self.assertEqual(result, 1002)
@@ -31,7 +28,7 @@ class TestHandshake(unittest.TestCase):
 
     def test_two_way_handshake(self):
         '''
-        checks that both peers can exhcange and validate handshales
+        tests two way handshake
         '''
         sock1, sock2 = socket.socketpair()
         results = {}
@@ -47,7 +44,7 @@ class TestHandshake(unittest.TestCase):
             finally:
                 sock.close()
 
-        #Each thread represents a separate peer
+        #Each peer is it's own thread
         thread1 = threading.Thread(
             target = run_peer, args=(sock1, 1001, 1002)
         )
@@ -65,7 +62,7 @@ class TestHandshake(unittest.TestCase):
 
     def test_wrong_peer_id(self):
         '''
-        Checks that an unexpected peer ID is rejected
+        Tests that unexpected peer with unexpected peer_id is rejected
         '''
         sock1, sock2 = socket.socketpair()
 
@@ -87,10 +84,7 @@ class TestHandshake(unittest.TestCase):
         sock1, sock2 = socket.socketpair()
 
         try:
-            #send only pare of the 32-byte handshale
             sock2.sendall(encode_handshake(1002)[:15])
-
-            #stop sending (but stay connected) before the rest of the handshake
             sock2.shutdown(socket.SHUT_WR)
 
             with self.assertRaises(EOFError):
