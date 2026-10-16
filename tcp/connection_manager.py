@@ -1,10 +1,10 @@
-"""Blocking IPv4 TCP connection setup."""
+"""Blocking IP TCP connection setup."""
 
 import socket
 
 
 def recv_exact(connection: socket.socket, size: int) -> bytes:
-    '''Read size bytes, or raise EOFError if the peer disconnects early.'''
+    '''Reads size bytes'''
     if size < 0:
         raise ValueError("size must not be negative")
     data = bytearray()
@@ -17,8 +17,6 @@ def recv_exact(connection: socket.socket, size: int) -> bytes:
 
 
 class ConnectionManager:
-    '''Own raw sockets; the handshake owner identifies and validates peers.'''
-
     def __init__(self, peer_id: int, all_peers: list[dict], timeout: float = 5):
         if timeout <= 0:
             raise ValueError("timeout must be positive")
@@ -47,12 +45,12 @@ class ConnectionManager:
         self.accepted = []
 
     def start_listening(self, bind_host: str = "0.0.0.0"):
-        '''Listen before connecting, using this peer's configured port.'''
+        '''Connection Listener starter'''
         if self.listener is not None:
             return
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            #lets us restart a peer right away instead of waiting for old connections to expire
+            #Restarts a peer fast
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind((bind_host, self.self_info["port"]))
             listener.listen(max(1, len(self.later_peers)))
@@ -63,7 +61,7 @@ class ConnectionManager:
         self.listener = listener
 
     def connect_to_previous(self) -> dict[int, socket.socket]:
-        '''Connect once to each earlier file entry, never by numeric ID order.'''
+        '''Connects once to each earlier peer'''
         if self.listener is None:
             raise RuntimeError("Call start_listening before connecting")
         try:
