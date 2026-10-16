@@ -1,7 +1,5 @@
-"""Multiprocess loopback checks for peer TCP connections.
-
-Run: python -m tcp.check_tcp_loopback
-Uses the team's handshake/codec/logger with configured four-digit peer IDs.
+"""Loopback checks for peer TCP connections that allows for multiple processess.
+Run: python3 check_tcp_loopback.py
 """
 
 import multiprocessing
@@ -28,8 +26,7 @@ def worker(peer_id, records, barrier, results, log_directory, started=None):
         if started is None:
             barrier.wait(timeout=15)
         else:
-            # Continue directly into real connect/accept work while later
-            # peers do not exist yet. Only the parent observes this signal.
+            # Continue directly into real connect/accept work while later peers do not exist yet. 
             started.put(peer_id)
         outgoing = manager.connect_to_previous()
         identified = dict(outgoing)
@@ -41,8 +38,7 @@ def worker(peer_id, records, barrier, results, log_directory, started=None):
         for _ in allowed:
             connection = manager.accept_next()
             connection.settimeout(10)
-            # Incoming identity is not known yet. Do not guess it from accept
-            # order or pass None to perform_handshake's expected_peer_id.
+            # As of this point, identity of incoming peer is currently uknown. 
             handshake = encode_handshake(peer_id)
             connection.sendall(handshake[:7])
             connection.sendall(handshake[7:])
@@ -53,7 +49,7 @@ def worker(peer_id, records, barrier, results, log_directory, started=None):
             logger.log_connection_received(other)
         if len(identified) != len(records) - 1:
             raise AssertionError("Incomplete mesh")
-        # Test-only payload after all handshakes; this is not a message codec.
+        # Test-only payload after all handshakes.
         barrier.wait(timeout=15)
         payload = bytes([peer_id % 256]) * 8192
         for connection in identified.values():
@@ -80,8 +76,7 @@ def worker(peer_id, records, barrier, results, log_directory, started=None):
 
 
 def check(count, staggered=False):
-    # Reserve distinct ephemeral ports while selecting them, then release for
-    # the child processes. A competing local process can still cause bind failure.
+    # Reserve distinct ports and selects them. Then it releases for child processes. 
     reservations = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(count)]
     try:
         for reservation in reservations:
@@ -107,7 +102,7 @@ def check(count, staggered=False):
                         raise AssertionError("Peers did not start in file order")
                     time.sleep(0.15)
             outcomes = []
-            for _ in processes:
+            for i in processes:
                 try:
                     outcomes.append(results.get(timeout=30))
                 except queue.Empty:
@@ -122,7 +117,7 @@ def check(count, staggered=False):
             mode = "staggered file-order startup" if staggered else "all listeners ready"
             print(f"PASS: {count} processes ({mode}), "
                   f"{count * (count - 1) // 2} full-duplex pairs; "
-                  "handshakes, payloads, EOF, logs and cleanup")
+                  "handshakes, payloads, logs, and cleanup")
         finally:
             for process in processes:
                 if process.is_alive():
