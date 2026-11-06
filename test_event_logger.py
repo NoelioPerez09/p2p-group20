@@ -79,6 +79,44 @@ class TestEventLogger(unittest.TestCase):
         self.assertIn("Peer 1001 makes a connection", first_entries[0])
         self.assertIn("Peer 1002 is connected from", second_entries[0])
 
+
+    def test_remaining_log_events(self):
+        '''
+        test the new logging messages
+        '''
+        logger = EventLogger(9999)
+
+        logger.log_preferred_neighbors([1001, 1002])
+        logger.log_optimistic_unchoke(1003)
+        logger.log_unchoked(1001)
+        logger.log_choked(1002)
+        logger.log_have(1001, 5)
+        logger.log_interested(1002)
+        logger.log_not_interested(1003)
+        logger.log_piece_downloaded(1001, 5, 10)
+        logger.log_download_complete()
+
+        with open(logger.file_path, "r") as file:
+            lines = file.readlines()
+
+        expected = [
+            "Peer 9999 has the preferred neighbors 1001, 1002.",
+            "Peer 9999 has the optimistically unchoked neighbor 1003.",
+            "Peer 9999 is unchoked by 1001.",
+            "Peer 9999 is choked by 1002.",
+            "Peer 9999 received the 'have' message from 1001 for the piece 5.",
+            "Peer 9999 received the 'interested' message from 1002.",
+            "Peer 9999 received the 'not interested' message from 1003.",
+            "Peer 9999 has downloaded the piece 5 from 1001. Now the number of pieces it has is 10.",
+            "Peer 9999 has downloaded the complete file."
+        ]
+
+        self.assertEqual(len(lines[-9:]), 9)
+
+        for line, message in zip(lines[-9:], expected):
+            self.assertEqual(line.split("]: ", 1)[1].strip(), message)
+
+
 if __name__ == "__main__":
     unittest.main()
                          
