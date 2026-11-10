@@ -43,8 +43,7 @@ def decode_handshake(encoded_handshake : bytes) -> int:
     return decoded_handshake[2]
 
 def encode_message(msg_type: int, payload: bytes = b"") -> bytes:
-    "Encodes a message into bytes for transmission"
-    
+    # Encodes a message into bytes for transmission
     if not (0 <= msg_type <= 7):
         raise ValueError(f"Invalid message type: {msg_type}")
     
@@ -53,7 +52,7 @@ def encode_message(msg_type: int, payload: bytes = b"") -> bytes:
     return header + payload
 
 def decode_message(body: bytes) -> tuple[int, bytes]:
-    "Decodes the body of a message (after reading the length)"
+    # Decodes the body of a message (after reading the length)
     if len(body) == 0:
         raise ValueError("Empty body")
     
@@ -66,15 +65,15 @@ def decode_message(body: bytes) -> tuple[int, bytes]:
     return msg_type, payload
 
 def encode_havereq_message(msg_type: int, piece_index: int) -> bytes:
-    "Encodes either have messages (type 4) or request messages (type 6)"
+    # Encodes either have messages (type 4) or request messages (type 6)
     payload = struct.pack(">I", piece_index)
     return encode_message(msg_type, payload)
 
 def encode_bitfield_message(bitfield_bytes: bytes) -> bytes:
-    "Encodes bitfield messages (type 5)"
+    # Encodes bitfield messages (type 5)
     return encode_message(message_type['bitfield'], bitfield_bytes)
 
 def encode_piece_message(piece_index: int, piece_data: bytes) -> bytes:
-    "Encodes piece messages (type 7)"
+    # Encodes piece messages (type 7)
     payload = struct.pack(">I", piece_index) + piece_data
     return encode_message(message_type['piece'], payload)
