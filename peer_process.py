@@ -1,10 +1,24 @@
 import socket
 import sys
+import threading
 
 from config import parse_common_config, parse_peer_info
 from event_logger import EventLogger
 from handshake import perform_handshake, perform_incoming_handshake
 from tcp import ConnectionManager
+
+from config import get_self_info
+from peer_state import create_initial_bitfield
+from protocol_codec import message_type
+from message_io import exchange_bitfield_interest
+from message_io import recv_framed_message
+import struct
+from peer_state import set_piece, is_interested_in
+from protocol_codec import encode_message
+from piece_transfer import pick_missing_piece, send_piece_request
+from piece_transfer import handle_piece_request
+from piece_transfer import handle_piece_received
+from protocol_codec import encode_havereq_message
 
 
 def connect_to_earlier_peers(manager: ConnectionManager, logger: EventLogger) -> dict[int, socket.socket]:
@@ -51,7 +65,371 @@ def accept_later_peers(manager: ConnectionManager, logger: EventLogger, connecte
         connected[other_id] = connection
         logger.log_connection_received(other_id)
 
+def handle_interest_message(msg_type, neigh_id, interested_peers, logger):
+    '''
+    updates whether a neighbor is interested in our pieces
+    and logs the received message
+    '''
+    if msg_type == message_type["interested"]:
+        interested_peers.add(neigh_id)
+        logger.log_interested(neigh_id)
 
+    elif msg_type == message_type["not_interested"]:
+        interested_peers.discard(neigh_id)
+        logger.log_not_interested(neigh_id)
+
+def handle_choke_message(msg_type, neigh_id, unchoked_by,
+                         pending_requests, logger):
+    '''
+    updates whether we can request pieces from a neighbor
+    '''
+    if msg_type == message_type["choke"]:
+        unchoked_by.discard(neigh_id)
+
+        #remove outstanding requests from this neighbor
+        for piece_index, requested_peer in list(pending_requests.items()):
+            if requested_peer == neigh_id:
+                del pending_requests[piece_index]
+
+        logger.log_choked(neigh_id)
+
+    elif msg_type == message_type["unchoke"]:
+        unchoked_by.add(neigh_id)
+        logger.log_unchoked(neigh_id)
+
+def handle_have_message(connection, payload, neigh_id,
+                        local_bitfield, neigh_bitfields,
+                        num_pieces, logger):
+    '''
+    updates the neighbor's bitfield and sends our interest
+    based on the pieces we still need
+    '''
+    #validate the payload and piece index
+    if len(payload) != 4:
+        return
+
+    piece_index = struct.unpack(">I", payload)[0]
+
+    if piece_index >= num_pieces:
+        return
+
+    #initialize neighbor bitfield if necessary
+    if neigh_id not in neigh_bitfields:
+        neigh_bitfields[neigh_id] = bytearray((num_pieces + 7) // 8)
+
+    #update the neighbor's piece ownership
+    set_piece(neigh_bitfields[neigh_id], piece_index)
+    logger.log_have(neigh_id, piece_index)
+
+    #check if the neighbor has any pieces we still need
+    if is_interested_in(local_bitfield,
+                        neigh_bitfields[neigh_id], num_pieces):
+        reply = encode_message(message_type["interested"])
+    else:
+        reply = encode_message(message_type["not_interested"])
+
+    connection.sendall(reply)
+
+def request_next_piece(connection, neigh_id, local_bitfield,
+                       neigh_bitfields, pending_requests,
+                       unchoked_by, num_pieces):
+    '''
+    requests a missing piece from an available neighbor
+    '''
+    #check if the neighbor allows us to download
+    if neigh_id not in unchoked_by:
+        return
+
+    if neigh_id not in neigh_bitfields:
+        return
+
+    #allow only one outstanding request per neighbor
+    if neigh_id in pending_requests.values():
+        return
+
+    #select a missing piece that is not already requested
+    piece_index = pick_missing_piece(
+        local_bitfield,
+        neigh_bitfields[neigh_id],
+        pending_requests,
+        num_pieces
+    )
+
+    #no available pieces to request
+    if piece_index is None:
+        return
+
+    #send request and track the pending piece
+    send_piece_request(
+        connection,
+        neigh_id,
+        piece_index,
+        pending_requests,
+        message_type
+    )
+
+def process_piece_request(connection, payload, peer_id,
+                          neigh_id, common_config,
+                          local_bitfield, unchoked_peers):
+    '''
+    handles a neighbor's request for a file piece
+    '''
+    #ignore requests from neighbors we have choked
+    if neigh_id not in unchoked_peers:
+        return
+
+    #validate the requested piece index
+    if len(payload) != 4:
+        return
+
+    piece_index = struct.unpack(">I", payload)[0]
+
+    if piece_index >= common_config["NumberOfPieces"]:
+        return
+
+    #read and send the requested piece
+    handle_piece_request(
+        connection,
+        payload,
+        peer_id,
+        common_config["FileName"],
+        common_config["FileSize"],
+        common_config["PieceSize"],
+        local_bitfield,
+        neigh_id in unchoked_peers
+    )
+
+def process_piece_received(payload, peer_id, neigh_id,
+                           common_config, local_bitfield,
+                           pending_requests, download_rates,
+                           connected, logger):
+    '''
+    stores received pieces, updates download rates,
+    and notifies neighbors of newly downloaded pieces
+    '''
+    #validate the received piece
+    if len(payload) < 4:
+        return
+
+    piece_index = struct.unpack(">I", payload[:4])[0]
+
+    if piece_index >= common_config["NumberOfPieces"]:
+        return
+
+    #check that the received piece has the correct size
+    piece_size = common_config["PieceSize"]
+    expected_size = min(
+        piece_size,
+        common_config["FileSize"] - piece_index * piece_size
+    )
+
+    if len(payload) - 4 != expected_size:
+        return
+
+    #store the piece and update our bitfield
+    result = handle_piece_received(
+        payload,
+        peer_id,
+        neigh_id,
+        common_config["FileName"],
+        common_config["FileSize"],
+        common_config["PieceSize"],
+        local_bitfield,
+        pending_requests
+    )
+
+    if result is None:
+        return
+
+    piece_index, owned_count = result
+
+    #update the neighbor's download statistics
+    download_rates[neigh_id] = (
+        download_rates.get(neigh_id, 0) + len(payload) - 4
+    )
+
+    #log the downloaded piece
+    logger.log_piece_downloaded(
+        neigh_id, piece_index, owned_count
+    )
+
+    #notify all connected neighbors about the new piece
+    have_msg = encode_havereq_message(
+        message_type["have"], piece_index
+    )
+
+    for connection in connected.values():
+        connection.sendall(have_msg)
+
+    #log when this peer finishes downloading the file
+    if owned_count == common_config["NumberOfPieces"]:
+        logger.log_download_complete()
+
+def update_neighbor_interest(connected, local_bitfield,
+                             neigh_bitfields, num_pieces):
+    '''
+    reevaluates our interest in each connected neighbor
+    '''
+    for neigh_id, connection in connected.items():
+        if neigh_id not in neigh_bitfields:
+            continue
+
+        #check if the neighbor has pieces we still need
+        interested = is_interested_in(
+            local_bitfield,
+            neigh_bitfields[neigh_id],
+            num_pieces
+        )
+
+        #send the updated interest status
+        if interested:
+            msg = encode_message(message_type["interested"])
+        else:
+            msg = encode_message(message_type["not_interested"])
+
+        connection.sendall(msg)
+
+def dispatch_control_message(msg_type, payload, connection,
+                             neigh_id, local_bitfield,
+                             neigh_bitfields, interested_peers,
+                             unchoked_by, pending_requests,
+                             num_pieces, logger):
+    '''
+    processes incoming interest, choke, and have messages
+    '''
+    if msg_type in (
+        message_type["interested"],
+        message_type["not_interested"]
+    ):
+        handle_interest_message(
+            msg_type, neigh_id, interested_peers, logger
+        )
+
+    elif msg_type in (
+        message_type["choke"],
+        message_type["unchoke"]
+    ):
+        handle_choke_message(
+            msg_type, neigh_id, unchoked_by,
+            pending_requests, logger
+        )
+
+    elif msg_type == message_type["have"]:
+        handle_have_message(
+            connection, payload, neigh_id,
+            local_bitfield, neigh_bitfields,
+            num_pieces, logger
+        )
+
+    else:
+        return False
+
+    return True
+
+def receive_messages(connection, neigh_id, peer_id,
+                     common_config, local_bitfield,
+                     neigh_bitfields, interested_peers,
+                     unchoked_peers, unchoked_by,
+                     pending_requests, download_rates,
+                     connected, logger, state_lock,
+                     stop_event):
+    '''
+    continuously receives and processes messages from a neighbor
+    and cleans up its state after disconnection
+    '''
+    num_pieces = common_config["NumberOfPieces"]
+
+    try:
+        while not stop_event.is_set():
+            #receive messages without holding the state lock
+            msg_type, payload = recv_framed_message(connection)
+
+            with state_lock:
+                #handle interest, choke, unchoke, and have messages
+                handled = dispatch_control_message(
+                    msg_type, payload, connection,
+                    neigh_id, local_bitfield,
+                    neigh_bitfields, interested_peers,
+                    unchoked_by, pending_requests,
+                    num_pieces, logger
+                )
+
+                if handled:
+                    request_next_piece(
+                        connection, neigh_id, local_bitfield,
+                        neigh_bitfields, pending_requests,
+                        unchoked_by, num_pieces
+                    )
+
+                elif msg_type == message_type["request"]:
+                    #send the requested piece to the neighbor
+                    process_piece_request(
+                        connection,
+                        payload,
+                        peer_id,
+                        neigh_id,
+                        common_config,
+                        local_bitfield,
+                        unchoked_peers
+                    )
+
+                elif msg_type == message_type["piece"]:
+                    #store the received piece
+                    process_piece_received(
+                        payload,
+                        peer_id,
+                        neigh_id,
+                        common_config,
+                        local_bitfield,
+                        pending_requests,
+                        download_rates,
+                        connected,
+                        logger
+                    )
+
+                    #update our interest in all neighbors
+                    update_neighbor_interest(
+                        connected,
+                        local_bitfield,
+                        neigh_bitfields,
+                        num_pieces
+                    )
+
+                    #continue requesting missing pieces
+                    for other_id, other_conn in connected.items():
+                        request_next_piece(
+                            other_conn,
+                            other_id,
+                            local_bitfield,
+                            neigh_bitfields,
+                            pending_requests,
+                            unchoked_by,
+                            num_pieces
+                        )
+
+    except (OSError, EOFError, ConnectionError) as error:
+        if not stop_event.is_set():
+            print(f"Connection error with peer {neigh_id}: {error}")
+
+    finally:
+        #clean up neighbor state after disconnection
+        with state_lock:
+            interested_peers.discard(neigh_id)
+            unchoked_peers.discard(neigh_id)
+            unchoked_by.discard(neigh_id)
+
+            #release outstanding requests from this neighbor
+            for piece_index, requested_peer in list(
+                pending_requests.items()
+            ):
+                if requested_peer == neigh_id:
+                    del pending_requests[piece_index]
+
+            download_rates.pop(neigh_id, None)
+            connected.pop(neigh_id, None)
+
+        connection.close()
+        
 def main():
     '''
     Entry point for one peer.
@@ -79,6 +457,27 @@ def main():
 
     logger = EventLogger(peer_id)
 
+    #get file info and initial ownership for this peer
+    self_info = get_self_info(peer_id, all_peers)
+    num_pieces = common_config["NumberOfPieces"]
+    has_file = self_info["has_file"]
+
+    #initialize our bitfield based on whether we have the file
+    local_bitfield = create_initial_bitfield(num_pieces, has_file)
+
+    #keep track of neighbor pieces and requested pieces
+    neigh_bitfields = {}
+    pending_requests = {}
+
+    #track interest and choking in both directions
+    interested_peers = set()
+    unchoked_peers = set()
+    unchoked_by = set()
+
+    #bytes downloaded from each neighbor during an interval
+    download_rates = {}
+    state_lock = threading.Lock()
+
     try:
         manager.start_listening()
 
@@ -90,6 +489,30 @@ def main():
             raise ValueError("Incomplete mesh")
 
         print(f"Peer {peer_id} connected to peers {sorted(connected)}")
+
+        #exchange bitfields and interest messages with each neighbor
+        for neigh_id, connection in connected.items():
+            connection.settimeout(manager.timeout)
+
+            peer_interested = exchange_bitfield_interest(
+                connection,
+                peer_id,
+                neigh_id,
+                local_bitfield,
+                neigh_bitfields,
+                num_pieces,
+                has_file,
+                message_type
+            )
+
+            connection.settimeout(None)
+
+            #track and log the neighbor's interest
+            if peer_interested:
+                interested_peers.add(neigh_id)
+                logger.log_interested(neigh_id)
+            else:
+                logger.log_not_interested(neigh_id)
 
         #TODO: Continue connection after handshake (will be implemented in final)
 
