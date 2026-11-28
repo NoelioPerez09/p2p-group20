@@ -6,7 +6,7 @@ from config import parse_common_config, parse_peer_info
 from event_logger import EventLogger
 from handshake import perform_handshake, perform_incoming_handshake
 from tcp import ConnectionManager
-
+from peer_state import num_owned_pieces
 from config import get_self_info
 from peer_state import create_initial_bitfield
 from protocol_codec import message_type
@@ -19,6 +19,11 @@ from piece_transfer import pick_missing_piece, send_piece_request
 from piece_transfer import handle_piece_request
 from piece_transfer import handle_piece_received
 from protocol_codec import encode_havereq_message
+
+from unchoking_timers import preferred_unchoke_iteration, optimistic_unchoke_iteration
+import time
+from completion import all_complete_file, shutdown_peer
+from peer_connection import send_to_peer, send_messages, QueuedConnection
 
 
 def connect_to_earlier_peers(manager: ConnectionManager, logger: EventLogger) -> dict[int, socket.socket]:
@@ -408,9 +413,17 @@ def receive_messages(connection, neigh_id, peer_id,
                         )
 
     except (OSError, EOFError, ConnectionError) as error:
-        if not stop_event.is_set():
-            print(f"Connection error with peer {neigh_id}: {error}")
+        with state_lock:
+            #check if the disconnected neighbor completed its download
+            neighbor_complete = (
+                neigh_id in neigh_bitfields
+                and num_owned_pieces(
+                    neigh_bitfields[neigh_id], num_pieces
+                ) == num_pieces
+            )
 
+        if not stop_event.is_set() and not neighbor_complete:
+            print(f"Connection error with peer {neigh_id}: {error}")
     finally:
         #clean up neighbor state after disconnection
         with state_lock:
@@ -429,6 +442,39 @@ def receive_messages(connection, neigh_id, peer_id,
             connected.pop(neigh_id, None)
 
         connection.close()
+
+def run_unchoking_scheduler(state, send_locks, connected,
+                            logger, common_config, stop_event):
+    '''
+    runs preferred and optimistic unchoking at their
+    configured intervals
+    '''
+    preferred_interval = common_config["UnchokingInterval"]
+    optimistic_interval = common_config["OptimisticUnchokingInterval"]
+
+    next_preferred = time.monotonic() + preferred_interval
+    next_optimistic = time.monotonic() + optimistic_interval
+
+    while not stop_event.is_set():
+        now = time.monotonic()
+
+        #update preferred neighbors
+        if now >= next_preferred:
+            preferred_unchoke_iteration(
+                state, send_locks, connected,
+                logger, message_type
+            )
+            next_preferred = now + preferred_interval
+
+        #update optimistic neighbor
+        if now >= next_optimistic:
+            optimistic_unchoke_iteration(
+                state, send_locks, connected,
+                logger, message_type
+            )
+            next_optimistic = now + optimistic_interval
+
+        stop_event.wait(0.1)
         
 def main():
     '''
@@ -478,6 +524,27 @@ def main():
     download_rates = {}
     state_lock = threading.Lock()
 
+    stop_event = threading.Event()
+    send_locks = {}
+    threads = []
+
+    #shared runtime state for message handling and scheduling
+    state = {
+        "lock": state_lock,
+        "peer_id": peer_id,
+        "num_pieces": num_pieces,
+        "local_bitfield": local_bitfield,
+        "neigh_bitfields": neigh_bitfields,
+        "interested_in_us": interested_peers,
+        "unchoked_by_us": unchoked_peers,
+        "interval_bytes": download_rates,
+        "num_preferred": common_config["NumberOfPreferredNeighbors"],
+        "preferred_neighbors": [],
+        "optimistic_neighbor": None,
+        "logged_complete": has_file,
+        "stop": False
+    }
+    connected = {}
     try:
         manager.start_listening()
 
@@ -514,13 +581,112 @@ def main():
             else:
                 logger.log_not_interested(neigh_id)
 
-        #TODO: Continue connection after handshake (will be implemented in final)
+        #initialize outgoing message queues and sender threads
+        for neigh_id, connection in list(connected.items()):
+            queued_connection = QueuedConnection(connection)
+            connected[neigh_id] = queued_connection
+            send_locks[neigh_id] = threading.Lock()
+
+            sender_thread = threading.Thread(
+                target=send_messages,
+                args=(
+                    connection,
+                    queued_connection.outgoing,
+                    stop_event
+                ),
+                daemon=True
+            )
+
+            threads.append(sender_thread)
+            sender_thread.start()
+
+        #initialize receiver threads for each connected neighbor
+        for neigh_id, connection in list(connected.items()):
+            receiver_thread = threading.Thread(
+                target=receive_messages,
+                args=(
+                    connection,
+                    neigh_id,
+                    peer_id,
+                    common_config,
+                    local_bitfield,
+                    neigh_bitfields,
+                    interested_peers,
+                    unchoked_peers,
+                    unchoked_by,
+                    pending_requests,
+                    download_rates,
+                    connected,
+                    logger,
+                    state_lock,
+                    stop_event
+                ),
+                daemon=True
+            )
+
+            threads.append(receiver_thread)
+            receiver_thread.start()
+
+
+        #start the unchoking scheduler
+        scheduler_thread = threading.Thread(
+            target=run_unchoking_scheduler,
+            args=(
+                state,
+                send_locks,
+                connected,
+                logger,
+                common_config,
+                stop_event
+            ),
+            daemon=True
+        )
+
+        threads.append(scheduler_thread)
+        scheduler_thread.start()
+
+
+        #get the IDs of all peers in the configuration
+        all_peer_ids = [p["peer_id"] for p in all_peers]
+
+        #wait until every peer has downloaded the complete file
+        while not stop_event.is_set():
+            if all_complete_file(state, all_peer_ids):
+                print(f"All peers have completed downloading the file.")
+                break
+
+            stop_event.wait(0.5)
 
     except (OSError, EOFError, ValueError) as error:
         print(f"Peer {peer_id} failed: {error}", file=sys.stderr)
         sys.exit(1)
     finally:
-        manager.close()
+        #stop scheduling new choking updates
+        with state_lock:
+            state["stop"] = True
+
+        #allow queued messages to finish sending
+        deadline = time.monotonic() + 5
+
+        with state_lock:
+            connections = list(connected.values())
+
+        while time.monotonic() < deadline:
+            if all(
+                connection.outgoing.unfinished_tasks == 0
+                for connection in connections
+                if isinstance(connection, QueuedConnection)
+            ):
+                break
+
+            time.sleep(0.1)
+
+        #stop workers and close connections
+        stop_event.set()
+        shutdown_peer(
+            state, send_locks, connected,
+            manager, threads
+        )
 
 
 if __name__ == "__main__":

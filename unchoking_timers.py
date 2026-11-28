@@ -16,7 +16,8 @@ def preferred_unchoke_iteration(state: dict, send_locks: dict[int, threading.Loc
         ids = list(connected.keys())
         interested_ids = [peer_id for peer_id in ids if peer_id in state["interested_in_us"]]
         rates = dict(state["interval_bytes"])
-        state["interval_bytes"] = {peer_id: 0 for peer_id in ids}
+        state["interval_bytes"].clear()
+        state["interval_bytes"].update({peer_id: 0 for peer_id in ids})
         k = state["num_preferred"]
         has_full_file = (num_owned_pieces(state["local_bitfield"], state["num_pieces"]) == state["num_pieces"])
         preferred = select_preferred_neighbors(interested_ids, rates, k, has_full_file)
@@ -28,7 +29,8 @@ def preferred_unchoke_iteration(state: dict, send_locks: dict[int, threading.Loc
             state["optimistic_neighbor"] = None
 
         to_unchoke, to_choke, unchoked = chocke_changes(ids, state["unchoked_by_us"], preferred, optimistic_neigh)
-        state["unchoked_by_us"] = unchoked
+        state["unchoked_by_us"].clear()
+        state["unchoked_by_us"].update(unchoked)
 
     logger.log_preferred_neighbors(preferred)
 
@@ -50,28 +52,42 @@ def preferred_unchoke(interval_sec: float, state: dict, send_locks: dict[int, th
                 break
         preferred_unchoke_iteration(state, send_locks, connected, logger, msg_types)
 
-def optimistic_unchoke_iteration(state: dict, send_locks: dict[int, threading.Lock], connected: dict[int, socket.socket],
+def optimistic_unchoke_iteration(state: dict, send_locks: dict[int, threading.Lock],
+                                 connected: dict[int, socket.socket],
                                  logger: EventLogger, msg_types: dict) -> None:
-    # Selects 1 neighbor that is both choked and interested, and optimistically unchokes it
-    chosen = None
-    already_unchoked = False
+    # Selects 1 neighbor that is both choked and interested, and updates choking status
     with state["lock"]:
         if state["stop"]:
             return
 
-        choked_interested = [peer_id for peer_id in connected.keys() 
-                             if peer_id in state["interested_in_us"] and peer_id not in state["unchoked_by_us"]]
+        ids = list(connected.keys())
+
+        choked_interested = [peer_id for peer_id in ids
+                             if peer_id in state["interested_in_us"]
+                             and peer_id not in state["unchoked_by_us"]]
+
         chosen = select_optimistic_neighbor(choked_interested)
         state["optimistic_neighbor"] = chosen
 
-        if chosen is not None:
-            already_unchoked = chosen in state["unchoked_by_us"]
-            state["unchoked_by_us"].add(chosen)
-    
+        # Computes which neighbors should be choked and unchoked
+        to_unchoke, to_choke, unchoked = chocke_changes(
+            ids, state["unchoked_by_us"],
+            state["preferred_neighbors"], chosen
+        )
+
+        state["unchoked_by_us"].clear()
+        state["unchoked_by_us"].update(unchoked)
+
     if chosen is not None:
         logger.log_optimistic_unchoke(chosen)
-        if not already_unchoked:
-            send_to_peer(send_locks, connected, chosen, encode_message(msg_types["unchoke"]))
+
+    choke_message = encode_message(msg_types["choke"])
+    for peer_id in to_choke:
+        send_to_peer(send_locks, connected, peer_id, choke_message)
+
+    unchoke_message = encode_message(msg_types["unchoke"])
+    for peer_id in to_unchoke:
+        send_to_peer(send_locks, connected, peer_id, unchoke_message)
 
 def optimistic_unchoke(interval_sec: float, state: dict, send_locks: dict[int, threading.Lock],
                        connected: dict[int, socket.socket], logger: EventLogger, msg_types: dict) -> None:
